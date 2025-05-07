@@ -12,8 +12,8 @@
 
 // OpenCL header file and Intel FPGA SDK header file
 // Uncomment when running FPGA Kernel
-#include "CL/opencl.h"
-#include "AOCLUtils/aocl_utils.h" 
+// #include "CL/opencl.h"
+// #include "AOCLUtils/aocl_utils.h" 
 
 // Toggle this to run on CPU (DE1-SoC or your machine) and FPGA
 // 0 to run on CPU
@@ -144,7 +144,7 @@ int main(int argc, char **argv) {
     if(options.has("aocx")) {
         aocxFilename = options.get<std::string>("aocx");  
     } else {
-        aocxFilename = "matrixMul";
+        aocxFilename = "matrix_mul";
     }
 
   // Initialize OpenCL.
@@ -178,11 +178,11 @@ int main(int argc, char **argv) {
 
 
 void setupDataAndModels(){
-    const char* filename = "first_image_mnist.bmp";
+    const char* filename = "test.bmp";
     int width = 0;
     int height = 0;
 
-    unsigned char* pre_image_data = loadBMPGrayscale(filename, &width, &height);
+    unsigned char* pre_image_data = loadBMPGrayscale24bit(filename, &width, &height);
     flipImageVertically(pre_image_data, width, height);
 
     normalizeImage(pre_image_data, width*height, image_data);
@@ -340,7 +340,7 @@ bool init_opencl() {
     cl_int err;
 
     // Create the kernels
-    kernel = clCreateKernel(program, "matrixMul", &status);
+    kernel = clCreateKernel(program, "matrix_mul", &status);
     checkError(status, "Failed to create cnn kernel");
 
 
@@ -374,6 +374,8 @@ void processTiles_weightStatinary(int numNeurons,
 
     #if FPGA == 1
         weightsTileBuffer = clCreateBuffer(context, CL_MEM_READ_ONLY, currentTileSize * outputNeuronsTileSize * sizeof(float), NULL, &err);
+        inputTileBuffer = clCreateBuffer(context, CL_MEM_READ_ONLY, inputTileSize * sizeof(float), NULL, &err);
+        outputBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, numNeurons * sizeof(float), NULL, &err);
         
         //#TODO : create remaining required buffers
 
@@ -396,6 +398,10 @@ void processTiles_weightStatinary(int numNeurons,
     #if FPGA == 1    
         clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&inputTileBuffer);
         //#TODO : set remaining kernel arguments
+        clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&weightsTileBuffer);
+        clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&outputBuffer);
+        clSetKernelArg(kernel, 3, sizeof(int), (void*)&inputTileSize);
+        clSetKernelArg(kernel, 4, sizeof(int), (void*)&outputNeuronsTileSize);
     #endif
 
 
@@ -417,10 +423,65 @@ void processTiles_weightStatinary(int numNeurons,
 
     // OpenCL kernels running on FPGA are not synchornous. You will synchronize your computations by waiting till the queue is finished by the following code    
     // clFinish(queue);    
+
+    #if FPGA == 1
+
+    for (int outStart = 0; outStart < numNeurons; outStart += outputNeuronsTileSize) {
+        int actualTileSize = std::min(outputNeuronsTileSize, numNeurons - outStart);
+        int weightsPerTile = inputTileSize * actualTileSize;
+
+        // Flattened slice of weights for this tile
+        float* weightTilePtr = &weights[outStart * inputTileSize];
+
+        // Copy weights tile to device
+        err = clEnqueueWriteBuffer(queue, weightsTileBuffer, CL_TRUE, 0,
+            weightsPerTile * sizeof(float), weightTilePtr, 0, NULL, NULL);
+
+        if (err != CL_SUCCESS) {
+            printf("Error writing weightsTileBuffer: %d\n", err);
+            exit(1);
+        }
+
+        // Copy input tile (same for all tiles)
+        err = clEnqueueWriteBuffer(queue, inputTileBuffer, CL_TRUE, 0,
+            inputTileSize * sizeof(float), inputs.data(), 0, NULL, NULL);
+
+        if (err != CL_SUCCESS) {
+            printf("Error writing inputTileBuffer: %d\n", err);
+            exit(1);
+        }
+
+        // Launch kernel
+        size_t global_work_size[] = { static_cast<size_t>(actualTileSize) };
+        size_t local_work_size[] = { static_cast<size_t>(1) };
+
+        err = clEnqueueNDRangeKernel(queue, kernel, 1, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+
+        if (err != CL_SUCCESS) {
+            printf("Error launching kernel: %d\n", err);
+            exit(1);
+        }
+
+        clFinish(queue); // Ensure kernel is done before next iteration
+    }
+
+    // Copy final output from FPGA back to host
+    err = clEnqueueReadBuffer(queue, outputBuffer, CL_TRUE, 0,
+        numNeurons * sizeof(float), outputs.data(), 0, NULL, NULL);
+
+    if (err != CL_SUCCESS) {
+        printf("Error reading output buffer: %d\n", err);
+        exit(1);
+    }
+
+    #endif
+
     
 
     #if FPGA == 1
         clReleaseMemObject(inputTileBuffer);
+        clReleaseMemObject(weightsTileBuffer);
+        clReleaseMemObject(outputBuffer);
         //#TODO: release remaining memory buffers
     #endif
 }
@@ -429,26 +490,68 @@ void processTiles_weightStatinary(int numNeurons,
 
 
 
+// void run() {
+//     cl_int status;
+
+//     // hidden 
+//     const unsigned hiddenLayerIndex = 0;
+//     const unsigned outputLayerIndex = 1;
+
+//     size_t hidden_weights_offset = 0; // Starting at the beginning for the hidden layer
+//     size_t output_weights_offset = 784 * 10; // Adjust based on your buffer organization
+//     size_t hidden_biases_offset = 0;
+//     size_t output_biases_offset = 10; // Assuming biases are also concatenated
+
+//     size_t hidden_work_size = {10};
+//     size_t output_work_size = {10};
+
+
+//     printf("started running on fpga\n");
+
+//     //#TODO: similar to connecting computing each layer and connecting them in CPU code, implement same logic here but calling the FPGA functions
+// }
 void run() {
-    cl_int status;
-
-    // hidden 
-    const unsigned hiddenLayerIndex = 0;
-    const unsigned outputLayerIndex = 1;
-
-    size_t hidden_weights_offset = 0; // Starting at the beginning for the hidden layer
-    size_t output_weights_offset = 784 * 10; // Adjust based on your buffer organization
-    size_t hidden_biases_offset = 0;
-    size_t output_biases_offset = 10; // Assuming biases are also concatenated
-
-    size_t hidden_work_size = {10};
-    size_t output_work_size = {10};
-
-
     printf("started running on fpga\n");
 
-    //#TODO: similar to connecting computing each layer and connecting them in CPU code, implement same logic here but calling the FPGA functions
+    const unsigned numInput = 784;
+    const unsigned numHidden = 10;
+    const unsigned numOutput = 10;
+
+    std::vector<float> hidden_output(numHidden, 0.0f);
+    std::vector<float> final_output(numOutput, 0.0f);
+
+    // First layer: input -> hidden
+    processTiles_weightStatinary(
+        numHidden,
+        numInput,
+        numInput,
+        hidden_layer1_weights,  // vector<float>
+        hidden_layer1_biases,
+        image_data,            // vector<float>
+        hidden_output           // output
+    );
+
+    // Apply ReLU activation on CPU
+    for (float &val : hidden_output) {
+        val = std::max(0.0f, val);
+    }
+
+    // Second layer: hidden -> output
+    processTiles_weightStatinary(
+        numOutput,
+        numHidden,
+        numHidden,
+        output_layer_weights,
+        output_layer_biases,
+        hidden_output,
+        final_output
+    );
+
+    // Optionally: apply softmax or argmax on final_output
+    int predicted = std::max_element(final_output.begin(), final_output.end()) - final_output.begin();
+    printf("Predicted class: %d\n", predicted);
 }
+
 #endif
 
 void matrixMulCPU(
@@ -505,7 +608,7 @@ void processTiles_weightStatinary_CPU(
     std::vector<float>& inputs,  // inputs array 
     std::vector<float>& outputs  // outputs array
     ) {
-
+    
     printf("in the weight stationary function of CPU\n");    
 
     int numTiles = inputSize / inputTileSize; // Ensure this division is an integer
@@ -537,6 +640,7 @@ void processTiles_weightStatinary_CPU(
     } 
 
 }
+
 
 void run_cpu() {
     
