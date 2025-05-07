@@ -12,13 +12,13 @@
 
 // OpenCL header file and Intel FPGA SDK header file
 // Uncomment when running FPGA Kernel
-// #include "CL/opencl.h"
-// #include "AOCLUtils/aocl_utils.h" 
+#include "CL/opencl.h"
+#include "AOCLUtils/aocl_utils.h"
 
 // Toggle this to run on CPU (DE1-SoC or your machine) and FPGA
 // 0 to run on CPU
 // 1 to run on FPGA
-#define FPGA 0
+#define FPGA 1
 
 
 
@@ -58,9 +58,9 @@ const int inputSize = 784; // 28x28 input image
 const int numNeurons = 10;
 
 // Tile size to perform matrix multiplication
-// Experiment with this size and report those values 
+// Experiment with this size and report those values
 const int inputTileSize = 28;
-    
+
 
 
 // Variables to hold input data
@@ -99,8 +99,8 @@ std::string layer1_biasesPath = "fc1_bias.bin";
 std::string output_weightsPath = "fc2_weight.bin";
 std::string output_biasesPath = "fc2_bias.bin";
 
-#if FPGA == 1 // functions that setup opencl environment, problem, run and cleanup 
-            // needed only when running the kernel   
+#if FPGA == 1 // functions that setup opencl environment, problem, run and cleanup
+            // needed only when running the kernel
 bool init_opencl();
 void run();
 void cleanup();
@@ -111,10 +111,10 @@ void setupDataAndModels();
 void run_cpu();
 void processTiles_weightStatinary_CPU(int numNeurons,
     int inputSize, // Size of the input array
-    int inputTileSize,  // Tile size of the Input vector          
+    int inputTileSize,  // Tile size of the Input vector
     std::vector<float>& weights, // Weights array
     std::vector<float>& biases,  // biases array
-    std::vector<float>& inputs,  // inputs array 
+    std::vector<float>& inputs,  // inputs array
     std::vector<float>& outputs  // outputs array);
     );
 void cleanup_cpu();
@@ -124,7 +124,7 @@ void relu(std::vector<float>& v);
 int getMaxIn(std::vector<float>& v);
 
 
-bool loadModelParameters(const std::string& weightsPath, const std::string& biasesPath, 
+bool loadModelParameters(const std::string& weightsPath, const std::string& biasesPath,
                          std::vector<float>& weightsBuffer, std::vector<float>& biases);
 
 
@@ -136,15 +136,15 @@ void log_softmax(std::vector<float>& v);
 int main(int argc, char **argv) {
 
   #if FPGA == 1
-  // Options from base OpenCL code, ignore for this lab  
+  // Options from base OpenCL code, ignore for this lab
   Options options(argc, argv);
 
   // Optional argument to specify the problem size.
   // Relative path to aocx filename.
     if(options.has("aocx")) {
-        aocxFilename = options.get<std::string>("aocx");  
+        aocxFilename = options.get<std::string>("aocx");
     } else {
-        aocxFilename = "matrix_mul";
+        aocxFilename = "matrixMul";
     }
 
   // Initialize OpenCL.
@@ -178,7 +178,7 @@ int main(int argc, char **argv) {
 
 
 void setupDataAndModels(){
-    const char* filename = "test.bmp";
+    const char* filename = "first_image_mnist.bmp";
     int width = 0;
     int height = 0;
 
@@ -186,7 +186,7 @@ void setupDataAndModels(){
     flipImageVertically(pre_image_data, width, height);
 
     normalizeImage(pre_image_data, width*height, image_data);
-    
+
     printf("done loading image:%d\n",width*height);
 
 
@@ -250,7 +250,7 @@ void normalizeImage(unsigned char* imageData, size_t imageSize, std::vector<floa
 std::vector<float> loadFloatsFromFile(const std::string& filename) {
     // Open the file in binary mode
     std::ifstream file(filename.c_str(), std::ios::binary | std::ios::ate);
-    
+
     if (!file.is_open()) {
         std::cerr << "Failed to open file: " << filename << std::endl;
         return {}; // Return an empty vector in case of failure
@@ -279,7 +279,7 @@ std::vector<float> loadFloatsFromFile(const std::string& filename) {
 
 
 
-bool loadModelParameters(const std::string& weightsPath, const std::string& biasesPath, 
+bool loadModelParameters(const std::string& weightsPath, const std::string& biasesPath,
                          std::vector<float>& weightsBuffer, std::vector<float>& biases) {
 
 
@@ -300,7 +300,7 @@ bool init_opencl() {
     // Start everything at NULL to help identify errors.
     kernel = NULL;
     queue = NULL;
-    
+
     // Locate files via. relative paths.
     if(!setCwdToExeDir()) {
         cleanup();
@@ -336,11 +336,11 @@ bool init_opencl() {
     // Build the program that was just created.
     status = clBuildProgram(program, 1, &device, "", NULL, NULL);
     checkError(status, "Error: could not build program");
-    
+
     cl_int err;
 
     // Create the kernels
-    kernel = clCreateKernel(program, "matrix_mul", &status);
+    kernel = clCreateKernel(program, "matrixMul", &status);
     checkError(status, "Failed to create cnn kernel");
 
 
@@ -354,14 +354,27 @@ bool init_opencl() {
 }
 
 
+std::vector<float> loadWeights(int weightsStartIndex,int numNeurons,int inputTileSize,int inputSize,
+    std::vector<float>& weights,std::vector<float>& temp_wts){
+
+    int index = 0;
+    for(int i=0;i<numNeurons;i++){
+        for(int j=0;j<inputTileSize;j++){
+            temp_wts[index] = weights[(i)*inputSize + j+weightsStartIndex];
+            //printf("index:%d\n",index);
+            index++;
+        }
+    }
+    return temp_wts;
+}
 
 #if FPGA == 1
 void processTiles_weightStatinary(int numNeurons,
     int inputSize, // Size of the input array
-    int inputTileSize,  // Tile size of the Input vector          
+    int inputTileSize,  // Tile size of the Input vector
     std::vector<float>& weights, // Weights array
     std::vector<float>& biases,  // biases array
-    std::vector<float>& inputs,  // inputs array 
+    std::vector<float>& inputs,  // inputs array
     std::vector<float>& outputs  // outputs array
     ) {
 
@@ -372,11 +385,12 @@ void processTiles_weightStatinary(int numNeurons,
     int outputNeuronsTileSize = 10;
     int currentTileSize = inputTileSize;
 
+
     #if FPGA == 1
         weightsTileBuffer = clCreateBuffer(context, CL_MEM_READ_ONLY, currentTileSize * outputNeuronsTileSize * sizeof(float), NULL, &err);
         inputTileBuffer = clCreateBuffer(context, CL_MEM_READ_ONLY, inputTileSize * sizeof(float), NULL, &err);
         outputBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, numNeurons * sizeof(float), NULL, &err);
-        
+
         //#TODO : create remaining required buffers
 
         if(err != CL_SUCCESS){
@@ -395,19 +409,20 @@ void processTiles_weightStatinary(int numNeurons,
     #else
     #endif
 
-    #if FPGA == 1    
+    #if FPGA == 1
         clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&inputTileBuffer);
         //#TODO : set remaining kernel arguments
         clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&weightsTileBuffer);
-        clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&outputBuffer);
-        clSetKernelArg(kernel, 3, sizeof(int), (void*)&inputTileSize);
-        clSetKernelArg(kernel, 4, sizeof(int), (void*)&outputNeuronsTileSize);
+        
+        clSetKernelArg(kernel, 2, sizeof(int), (void*)&inputTileSize);
+        clSetKernelArg(kernel, 3, sizeof(int), (void*)&outputNeuronsTileSize);
+        clSetKernelArg(kernel, 4, sizeof(cl_mem), (void*)&outputBuffer);
     #endif
 
 
     //#TODO: similar to weightstationary_cpu code implemnt the same logic with inner loop taken care by the parallel kernes
 
-    //For each kernel launch you write data to the buffers using a command similar to the following 
+    //For each kernel launch you write data to the buffers using a command similar to the following
     // err = clEnqueueWriteBuffer(queue, weightsTileBuffer, CL_TRUE, 0, weightsPerTile * sizeof(float), &hidden_layer1_weights[weightsStartIndex], 0, NULL, NULL);
 
     //#TODO: After writing buffers to each kernel launch kernel using the follwoing code
@@ -417,25 +432,37 @@ void processTiles_weightStatinary(int numNeurons,
     //size_t global_work_size[] = {static_cast<size_t>(10)};
     //size_t local_work_size[] = {static_cast<size_t>(1)};
 
-    // assuming you implemented a 1D kernel in OpenCL, if you implemented 2D please discuss with TA    
+    // assuming you implemented a 1D kernel in OpenCL, if you implemented 2D please discuss with TA
 
     //err = clEnqueueNDRangeKernel(queue, kernel, 0, NULL, global_work_size, local_work_size, 1, NULL, NULL);
 
-    // OpenCL kernels running on FPGA are not synchornous. You will synchronize your computations by waiting till the queue is finished by the following code    
-    // clFinish(queue);    
+    // OpenCL kernels running on FPGA are not synchornous. You will synchronize your computations by waiting till the queue is finished by the following code  
+    // clFinish(queue);
 
     #if FPGA == 1
 
-    for (int outStart = 0; outStart < numNeurons; outStart += outputNeuronsTileSize) {
-        int actualTileSize = std::min(outputNeuronsTileSize, numNeurons - outStart);
-        int weightsPerTile = inputTileSize * actualTileSize;
+
+    int numTiles = inputSize / inputTileSize; // Ensure this division is an integer
+    int totalWeights = inputSize * numNeurons;
+    int weightsPerTile = numNeurons*inputTileSize; // Assuming an even distribution of neurons per tile
+
+
+    for (int tileIndex = 0; tileIndex < numTiles; ++tileIndex){
+        int weightsStartIndex = tileIndex * inputTileSize;
+        std::vector<float> temp_wts;
+        temp_wts.resize(numNeurons * inputTileSize);
+        loadWeights(weightsStartIndex,numNeurons,inputTileSize,inputSize,weights,temp_wts);
+
+        std::vector<float> inputSlice(std::next(inputs.begin(), weightsStartIndex), std::next(inputs.begin(), weightsStartIndex+inputTileSize));
+
+
 
         // Flattened slice of weights for this tile
-        float* weightTilePtr = &weights[outStart * inputTileSize];
+        //float* weightTilePtr = &weights[outStart * inputTileSize];
 
         // Copy weights tile to device
         err = clEnqueueWriteBuffer(queue, weightsTileBuffer, CL_TRUE, 0,
-            weightsPerTile * sizeof(float), weightTilePtr, 0, NULL, NULL);
+            weightsPerTile * sizeof(float), &temp_wts[0], 0, NULL, NULL);
 
         if (err != CL_SUCCESS) {
             printf("Error writing weightsTileBuffer: %d\n", err);
@@ -444,7 +471,7 @@ void processTiles_weightStatinary(int numNeurons,
 
         // Copy input tile (same for all tiles)
         err = clEnqueueWriteBuffer(queue, inputTileBuffer, CL_TRUE, 0,
-            inputTileSize * sizeof(float), inputs.data(), 0, NULL, NULL);
+            inputTileSize * sizeof(float), &inputSlice[0], 0, NULL, NULL);
 
         if (err != CL_SUCCESS) {
             printf("Error writing inputTileBuffer: %d\n", err);
@@ -452,7 +479,7 @@ void processTiles_weightStatinary(int numNeurons,
         }
 
         // Launch kernel
-        size_t global_work_size[] = { static_cast<size_t>(actualTileSize) };
+        size_t global_work_size[] = { static_cast<size_t>(numNeurons) };
         size_t local_work_size[] = { static_cast<size_t>(1) };
 
         err = clEnqueueNDRangeKernel(queue, kernel, 1, NULL, global_work_size, local_work_size, 0, NULL, NULL);
@@ -463,7 +490,7 @@ void processTiles_weightStatinary(int numNeurons,
         }
 
         clFinish(queue); // Ensure kernel is done before next iteration
-    }
+
 
     // Copy final output from FPGA back to host
     err = clEnqueueReadBuffer(queue, outputBuffer, CL_TRUE, 0,
@@ -473,10 +500,12 @@ void processTiles_weightStatinary(int numNeurons,
         printf("Error reading output buffer: %d\n", err);
         exit(1);
     }
-
+}
     #endif
+    for (int i = 0; i<numNeurons; i++){
+                outputs[i] += biases[i];
+        }
 
-    
 
     #if FPGA == 1
         clReleaseMemObject(inputTileBuffer);
@@ -493,7 +522,7 @@ void processTiles_weightStatinary(int numNeurons,
 // void run() {
 //     cl_int status;
 
-//     // hidden 
+//     // hidden
 //     const unsigned hiddenLayerIndex = 0;
 //     const unsigned outputLayerIndex = 1;
 
@@ -567,7 +596,7 @@ void matrixMulCPU(
     // Ensure we don't process more neurons than we have in this tile
     if (neuron_id < output_neurons_tile_size) {
         float temp_sum = 0.0;
-        
+
         // Compute the dot product of the input tile and the corresponding weights
         for (int i = 0; i < input_tile_size; ++i) {
 
@@ -584,32 +613,20 @@ void matrixMulCPU(
 }
 
 
-std::vector<float> loadWeights(int weightsStartIndex,int numNeurons,int inputTileSize,int inputSize,
-    std::vector<float>& weights,std::vector<float>& temp_wts){
-    
-    int index = 0;
-    for(int i=0;i<numNeurons;i++){
-        for(int j=0;j<inputTileSize;j++){
-            temp_wts[index] = weights[(i)*inputSize + j+weightsStartIndex];
-            //printf("index:%d\n",index);
-            index++;
-        }
-    }
-    return temp_wts;    
-}
+
 
 #if FPGA == 0
 void processTiles_weightStatinary_CPU(
     int numNeurons,
     int inputSize, // Size of the input array
-    int inputTileSize,  // Tile size of the Input vector          
+    int inputTileSize,  // Tile size of the Input vector
     std::vector<float>& weights, // Weights array
     std::vector<float>& biases,  // biases array
-    std::vector<float>& inputs,  // inputs array 
+    std::vector<float>& inputs,  // inputs array
     std::vector<float>& outputs  // outputs array
     ) {
-    
-    printf("in the weight stationary function of CPU\n");    
+
+    printf("in the weight stationary function of CPU\n");
 
     int numTiles = inputSize / inputTileSize; // Ensure this division is an integer
     int totalWeights = inputSize * numNeurons;
@@ -618,8 +635,8 @@ void processTiles_weightStatinary_CPU(
 
 
     for (int tileIndex = 0; tileIndex < numTiles; ++tileIndex) {
-        
-        int weightsStartIndex = tileIndex * inputTileSize; 
+
+        int weightsStartIndex = tileIndex * inputTileSize;
         std::vector<float> temp_wts;
         temp_wts.resize(numNeurons * inputTileSize);
         loadWeights(weightsStartIndex,numNeurons,inputTileSize,inputSize,weights,temp_wts);
@@ -637,15 +654,15 @@ void processTiles_weightStatinary_CPU(
 
     for(int i=0;i<numNeurons;i++){
         outputs[i] += biases[i];
-    } 
+    }
 
 }
 
 
 void run_cpu() {
-    
 
-    // hidden 
+
+    // hidden
     const unsigned hiddenLayerIndex = 0;
     const unsigned outputLayerIndex = 1;
 
@@ -663,10 +680,10 @@ void run_cpu() {
     hidden_layer1_out.resize(numNeurons * inputTileSize);
     processTiles_weightStatinary_CPU(hidden_work_size,
     inputSize, // Size of the input array
-    inputTileSize,  // Tile size of the Input vector          
+    inputTileSize,  // Tile size of the Input vector
     hidden_layer1_weights, // Weights array
     hidden_layer1_biases,  // biases array
-    image_data,  // inputs array 
+    image_data,  // inputs array
     hidden_layer1_out  // outputs array);
     );
 
@@ -692,15 +709,15 @@ void run_cpu() {
 
     processTiles_weightStatinary_CPU(output_work_size,
     output_work_size, // Size of the input array
-    10,  // Tile size of the Input vector          
+    10,  // Tile size of the Input vector
     output_layer_weights, // Weights array
     output_layer_biases,  // biases array
-    hidden_layer1_out,  // inputs array 
+    hidden_layer1_out,  // inputs array
     output_layer_out  // outputs array);
     );
 
 
-    std::cout << "Output of fc2 (before LogSoftmax): "; 
+    std::cout << "Output of fc2 (before LogSoftmax): ";
     for(int i=0;i<10;i++){
         std::cout << output_layer_out[i] << " ";
     }
@@ -709,7 +726,7 @@ void run_cpu() {
     log_softmax(output_layer_out);
 
 
-    std::cout << "Output of fc2 (after LogSoftmax): "; 
+    std::cout << "Output of fc2 (after LogSoftmax): ";
     for(int i=0;i<10;i++){
         std::cout << output_layer_out[i] << " ";
     }
@@ -764,7 +781,3 @@ void cleanup() {
 
     // If you have other resources allocated, make sure to release them properly
 }
-
-
-
-
